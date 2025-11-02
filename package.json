@@ -1,0 +1,11 @@
+{
+  "name": "roblox-discord-watcher",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
