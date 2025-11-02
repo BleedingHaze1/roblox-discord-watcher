@@ -430,6 +430,15 @@ client.on("interactionCreate", async (i) => {
     if (i.deferred || i.replied) await i.followUp({ content: `Error: ${e.message}`, ephemeral: true });
     else await i.reply({ content: `Error: ${e.message}`, ephemeral: true });
   }
+  // Tiny HTTP server (only if Railway expects a web port)
+try {
+  const http = require("http");
+  const port = process.env.PORT || 3000;
+  http.createServer((_, res) => { res.writeHead(200); res.end("OK"); }).listen(port, () => {
+    console.log("HTTP keepalive on port", port);
+  });
+} catch {}
+
 });
 
 client.login(TOKEN);
