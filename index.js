@@ -78,35 +78,85 @@ async function fetchUsername(userId) {
   } catch {}
   return String(userId);
 }
+// Robust fetch with retries & jitter (handles 504/502/500 and network timeouts)
+async function fetchJsonWithRetry(url, opts = {}, {
+  attempts = 5,                      // total tries
+  initialDelayMs = 800,              // first backoff delay
+  maxDelayMs = 6000,                 // cap backoff
+  okStatuses = [200],                // treat these as success
+} = {}) {
+  let delay = initialDelayMs;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (okStatuses.includes(res.status)) {
+        return await res.json();
+      }
+      // Retry on server errors/rate limit/gateway timeout
+      if ([429, 500, 502, 503, 504].includes(res.status)) {
+        const text = await res.text().catch(()=>"...");        
+        console.warn(`Retryable HTTP ${res.status} on ${url} (try ${i}/${attempts}) — ${text.slice(0,120)}`);
+      } else {
+        // Non-retryable
+        const text = await res.text().catch(()=>"...");
+        console.warn(`Non-retryable HTTP ${res.status} on ${url} — ${text.slice(0,120)}`);
+        return null;
+      }
+    } catch (e) {
+      console.warn(`Network error on ${url} (try ${i}/${attempts}):`, e?.message || e);
+    }
+    // backoff with jitter
+    await sleep(delay + Math.floor(Math.random() * 300));
+    delay = Math.min(Math.floor(delay * 1.8), maxDelayMs);
+  }
+  return null;
+}
 
 async function refreshGroupMembers() {
   const found = new Set();
+
+  // Use smaller pages to reduce upstream load; helps avoid 504
+  const pageLimit = 25;
   let cursor = "";
+
   while (true) {
-    let res;
-    try {
-      res = await fetch(GROUP_USERS_URL(CONFIG.GROUP_ID, cursor));
-    } catch (e) {
-      console.warn("Group fetch network error:", e?.message || e);
-      break;
+    const url = `https://groups.roblox.com/v1/groups/${CONFIG.GROUP_ID}/users?limit=${pageLimit}` +
+                (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
+
+    const j = await fetchJsonWithRetry(url, { method: "GET" }, { attempts: 5, initialDelayMs: 700 });
+    if (!j) {
+      console.warn("Group page fetch gave up after retries; keeping current roster (partial OK).");
+      break; // stop pagination loop (we’ll keep whatever we gathered)
     }
-    if (!res.ok) {
-      console.warn("Group fetch failed:", res.status, await res.text().catch(()=>"..."));
-      break;
-    }
-    const j = await res.json();
+
     for (const row of j.data || []) {
       const rank = row.role?.rank ?? 0;
       const uid = String(row.user?.userId ?? row.user?.id ?? "");
       if (uid && rank >= CONFIG.MIN_RANK) found.add(uid);
     }
+
     if (!j.nextPageCursor) break;
     cursor = j.nextPageCursor;
   }
-  watchedUserIds = [...found];
+
+  const newList = [...found];
+  watchedUserIds = newList;
   console.log(`✓ Watching ${watchedUserIds.length} users (rank ≥ ${CONFIG.MIN_RANK}).`);
+
+  // If we somehow got 0 (Roblox still flaky), schedule a quick retry in ~60s
+  if (watchedUserIds.length === 0) {
+    setTimeout(async () => {
+      console.log("Roster was empty — quick retry…");
+      const count = await refreshGroupMembers();
+      try {
+        await sendAlert(`⚠️ Roster retry — now watching **${count}** users`);
+      } catch {}
+    }, 60 * 1000);
+  }
+
   return watchedUserIds.length;
 }
+
 
 function chunk(arr, n) {
   const out = [];
